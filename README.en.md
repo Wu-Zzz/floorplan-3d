@@ -10,7 +10,7 @@ Open <https://wu-zzz.github.io/floorplan-3d/>. This is a fork of [wy51ai/floorpl
 
 Pushes to `master` automatically deploy through GitHub Actions. Only the app, its three layout scripts, license, and two linked reference assets are published. The site and its floor plan references are public. Designs are saved in the current browser at the current URL; export and import JSON to move a design between devices or from the local site. Three.js loads from jsDelivr.
 
-The maintenance scripts and `layout-proposal.json` are not required to serve the site. Regenerating the CAD geometry requires the local source DXF at `../CAD核对/转换文件/户型.dxf`; normal deployment uses the generated JavaScript already in this repository.
+The maintenance scripts and `layout-proposal.json` are not required to serve the site. Regenerating the CAD geometry requires the local DXF at `../CAD核对/转换文件/户型.dxf` and the original DWG at `../CAD核对/原始文件/2栋1户型.dwg` for source verification; normal deployment uses the generated JavaScript already in this repository.
 
 ## Features
 
