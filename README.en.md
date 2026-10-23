@@ -8,9 +8,17 @@ A pure front-end tool for interior design on a floor plan: place furniture, remo
 
 Open <https://wu-zzz.github.io/floorplan-3d/>. This is a fork of [wy51ai/floorplan-3d](https://github.com/wy51ai/floorplan-3d), retaining the MIT license.
 
-Pushes to `master` automatically deploy through GitHub Actions. Only the app, its three layout scripts, license, and two linked reference assets are published. The site and its floor plan references are public. Designs are saved in the current browser at the current URL; export and import JSON to move a design between devices or from the local site. Three.js loads from jsDelivr.
+Pushes to `master` automatically deploy through GitHub Actions after tests pass. Only the app, layout and sync files, license, and two linked reference assets are published. The site and its default floor plan references are public. Designs are always saved locally; optional Supabase cloud storage synchronizes the signed-in user's design. Export and import JSON to migrate from the local site. Three.js and the Supabase SDK load from jsDelivr.
 
 The maintenance scripts and `layout-proposal.json` are not required to serve the site. Regenerating the CAD geometry requires the local DXF at `../CAD核对/转换文件/户型.dxf` and the original DWG at `../CAD核对/原始文件/2栋1户型.dwg` for source verification; normal deployment uses the generated JavaScript already in this repository.
+
+## Cloud sync setup
+
+Cloud sync is disabled until `sync-config.js` contains a Supabase project URL and an `sb_publishable_` key. Never put secret/service-role keys or database passwords in browser files. Apply `supabase/migrations/202610230001_floorplan_sync.sql` once to a dedicated project, enable email sign-in, and allow `https://wu-zzz.github.io/floorplan-3d/` as the Auth site/redirect URL. Keep the Magic Link email template. Verify email delivery: Supabase's built-in mail service only supports project team addresses with limited volume; other addresses require [custom SMTP](https://supabase.com/docs/guides/auth/auth-smtp).
+
+Sign in using the same email on each device. Edits upload after an 800 ms debounce, with a 5-second foreground polling interval. Offline drafts survive reload; competing edits require an explicit choice and keep up to 5 local backups. Writes use an atomic server revision check. Each user can only access their own design. Camera and UI preferences remain device-local.
+
+Run `npm ci --ignore-scripts` and `npm test` for the sync engine and local PGlite database checks. These do not replace live authentication and two-device validation after configuration.
 
 ## Features
 

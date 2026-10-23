@@ -2,18 +2,34 @@
 
 中文 | [English](README.en.md)
 
-纯前端的户型装修设计工具：在 2D 平面图上摆放家具、拆改墙体、测量尺寸，一键切换到 Three.js 3D 场景，可以鸟瞰，也可以第一人称漫游。当前版本以 `index.html` 为入口，通过独立 JavaScript 文件加载自家户型，无需构建或后台服务。
+户型装修设计工具：在 2D 平面图上摆放家具、拆改墙体、测量尺寸，一键切换到 Three.js 3D 场景，可以鸟瞰，也可以第一人称漫游。网页以 `index.html` 为入口，无需构建；本地保存无需后台，可选的跨设备同步使用 Supabase。
 
 ## 在线使用与部署
 
 - 在线地址：<https://wu-zzz.github.io/floorplan-3d/>
 - 本仓库 fork 自 [wy51ai/floorplan-3d](https://github.com/wy51ai/floorplan-3d)，保留原项目 MIT 许可，加入自家户型与四卧方案。
 - 推送到 `master` 后，GitHub Actions 自动发布到 GitHub Pages；也可以在 Actions 中手动运行 `Deploy GitHub Pages`。
-- 发布内容为 `index.html`、`cad-geometry.js`、`photo-appearance.js`、`home-plan.js`、`LICENSE`，以及页面引用的两份 `assets` 参考资料。网站及其户型资料公开可访问。
-- 设计修改保存在当前网址的当前浏览器中，不会自动跨设备同步。本地旧方案请先导出 JSON，再到在线页面导入；重要版本请保留 JSON 备份。
+- 发布内容为网页、户型脚本、`sync-*.js` / `sync-ui.css`、`LICENSE`，以及页面引用的两份 `assets` 参考资料。网站及其默认户型资料公开可访问，云端修改由账号隔离。
+- 设计修改始终保存在当前浏览器；配置云端后，同一邮箱登录的设备会自动同步。本地旧方案请先导出 JSON，再到在线页面导入；重要版本请保留 JSON 备份。
 - 3D 使用 jsDelivr 提供的 Three.js，需要浏览器能够连接该服务。
 
 `scripts/` 与 `layout-proposal.json` 用于本地维护，不参与网页运行。重新从 CAD 提取几何需要本地的 `../CAD核对/转换文件/户型.dxf`，以及用于来源校验的 `../CAD核对/原始文件/2栋1户型.dwg`；部署使用已生成的 JavaScript，不需要原始 CAD 或这些脚本的依赖。历史导出文件不随网站发布。
+
+## 启用云端保存
+
+未配置 `sync-config.js` 时仅本地保存，不能跨设备同步。云端启用步骤：
+
+1. 为本项目准备独立的 Supabase 项目，应用 `supabase/migrations/202610230001_floorplan_sync.sql` 一次。
+2. 在 Auth 的 URL Configuration 中，把 Site URL 和允许跳转的网址设为 `https://wu-zzz.github.io/floorplan-3d/`。启用邮箱登录，保留默认 Magic Link 邮件模板。
+3. 确认登录邮件可以送达。Supabase 默认邮件服务只面向项目团队邮箱且有发送限制；其他邮箱需要配置自有 SMTP。见 [官方邮件服务说明](https://supabase.com/docs/guides/auth/auth-smtp)。
+4. 在 `sync-config.js` 填入项目 HTTPS URL 和 `sb_publishable_` 开头的公开 key，再发布。禁止使用 secret key、service-role key 或数据库密码。
+5. 电脑、手机分别点击“云端同步”，使用同一邮箱，在各自设备打开收到的登录链接。
+
+修改停止约 0.8 秒后自动上传；网页在前台时每 5 秒检查更新，切回页面或恢复联网时立即检查。关闭网页期间不能后台同步，未上传内容会保留为本机草稿。首次打开的新设备先下载云端；两边都有修改时需选择版本，替换前保留最近 5 份本机备份。同一浏览器不同标签页各有待同步草稿，可在同步面板下载，再通过“导入方案”恢复。
+
+云端使用整份方案 JSON 和服务器版本号，原子比较版本后写入；冲突不会自动合并家具位置。账号只可读取自己的方案，写入仅经过受保护的 `save_floorplan` 函数。视角、语言及面板位置不同步。
+
+开发校验：`npm ci --ignore-scripts` 后运行 `npm test`。数据库测试在本地 PGlite 执行迁移及账号权限，属于本地验证；上线还需验证真实邮箱登录、两台设备读写、断网恢复及冲突处理。
 
 ## 功能
 

@@ -25,10 +25,15 @@ jobs:
         uses: actions/checkout@v6
       - name: Configure Pages
         uses: actions/configure-pages@v5
+      - name: Check cloud sync
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm test
       - name: Prepare website
         run: |
           mkdir -p _site/assets
           cp index.html cad-geometry.js photo-appearance.js home-plan.js LICENSE _site/
+          cp sync-config.js sync-core.js sync-ui.js sync-ui.css _site/
           cp assets/cad-reference.pdf assets/original-floorplan.jpg _site/assets/
       - name: Upload website
         uses: actions/upload-pages-artifact@v4

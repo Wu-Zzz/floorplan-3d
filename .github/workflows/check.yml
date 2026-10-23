@@ -1,0 +1,17 @@
+name: Check cloud sync
+
+on:
+  pull_request:
+  push:
+    branches: [feat/cloud-sync]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm test
