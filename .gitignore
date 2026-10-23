@@ -13,6 +13,13 @@ desktop.ini
 node_modules/
 dist/
 build/
+_site/
+
+# 本地导出、审计结果与浏览器验收文件
+outputs/
+scripts/*-audit.json
+output/playwright/
+.playwright-cli/
 
 # 日志与临时文件
 *.log

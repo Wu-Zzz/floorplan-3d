@@ -2,7 +2,18 @@
 
 中文 | [English](README.en.md)
 
-纯前端的户型装修设计工具：在 2D 平面图上摆放家具、拆改墙体、测量尺寸，一键切换到 Three.js 3D 场景，可以鸟瞰，也可以第一人称漫游。整个应用就是一个 `index.html`，无需构建，打开即用。
+纯前端的户型装修设计工具：在 2D 平面图上摆放家具、拆改墙体、测量尺寸，一键切换到 Three.js 3D 场景，可以鸟瞰，也可以第一人称漫游。当前版本以 `index.html` 为入口，通过独立 JavaScript 文件加载自家户型，无需构建或后台服务。
+
+## 在线使用与部署
+
+- 在线地址：<https://wu-zzz.github.io/floorplan-3d/>
+- 本仓库 fork 自 [wy51ai/floorplan-3d](https://github.com/wy51ai/floorplan-3d)，保留原项目 MIT 许可，加入自家户型与四卧方案。
+- 推送到 `master` 后，GitHub Actions 自动发布到 GitHub Pages；也可以在 Actions 中手动运行 `Deploy GitHub Pages`。
+- 发布内容为 `index.html`、`cad-geometry.js`、`photo-appearance.js`、`home-plan.js`、`LICENSE`，以及页面引用的两份 `assets` 参考资料。网站及其户型资料公开可访问。
+- 设计修改保存在当前网址的当前浏览器中，不会自动跨设备同步。本地旧方案请先导出 JSON，再到在线页面导入；重要版本请保留 JSON 备份。
+- 3D 使用 jsDelivr 提供的 Three.js，需要浏览器能够连接该服务。
+
+`scripts/` 与 `layout-proposal.json` 用于本地维护，不参与网页运行。重新从 CAD 提取几何需要本地原始 DXF：`../CAD核对/转换文件/户型.dxf`；部署使用已生成的 JavaScript，不需要原始 CAD 或这些脚本的依赖。历史导出文件不随网站发布。
 
 ## 功能
 
@@ -70,7 +81,7 @@ python3 -m http.server 8000
 
 ## 自定义户型
 
-户型数据写在 `index.html` 里：
+当前版本的户型数据在 `cad-geometry.js`、`photo-appearance.js` 和 `home-plan.js` 中；家具库、材料及交互逻辑在 `index.html` 中：
 
 - `ROOMS`：房间多边形、名称、默认地面材料
 - `WALLS` / `WINS`：墙体与窗洞

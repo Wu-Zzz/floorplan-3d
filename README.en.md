@@ -2,7 +2,15 @@
 
 [中文](README.md) | English
 
-A pure front-end tool for interior design on a floor plan: place furniture, remove or modify walls, and take measurements on a 2D plan, then switch to a Three.js 3D scene with one click — view it from above or walk through it in first person. The whole app is a single `index.html`: no build step, just open it.
+A pure front-end tool for interior design on a floor plan: place furniture, remove or modify walls, and take measurements on a 2D plan, then switch to a Three.js 3D scene with one click — view it from above or walk through it in first person. This fork loads a custom home layout from JavaScript files alongside `index.html`, with no build step or backend.
+
+## Live site and deployment
+
+Open <https://wu-zzz.github.io/floorplan-3d/>. This is a fork of [wy51ai/floorplan-3d](https://github.com/wy51ai/floorplan-3d), retaining the MIT license.
+
+Pushes to `master` automatically deploy through GitHub Actions. Only the app, its three layout scripts, license, and two linked reference assets are published. The site and its floor plan references are public. Designs are saved in the current browser at the current URL; export and import JSON to move a design between devices or from the local site. Three.js loads from jsDelivr.
+
+The maintenance scripts and `layout-proposal.json` are not required to serve the site. Regenerating the CAD geometry requires the local source DXF at `../CAD核对/转换文件/户型.dxf`; normal deployment uses the generated JavaScript already in this repository.
 
 ## Features
 
