@@ -421,3 +421,120 @@ test('restarting an engine cannot apply the previous generation response', async
   assert.deepEqual(f.state.local, design('new session'));
   assert.equal(f.engine.getStatus().revision, 3);
 });
+
+test('an oversized valid local plan is an actionable rejection without repeated RPC writes', async t => {
+  const f = fixture(t);
+  await f.engine.start();
+  const write = f.options.writeRemote;
+  let attempts = 0;
+  f.options.writeRemote = async request => {
+    attempts++;
+    if (Buffer.byteLength(JSON.stringify(request.content), 'utf8') > 1024 * 1024) {
+      throw { code: '22023', message: 'Design exceeds the 1 MiB server limit' };
+    }
+    return write(request);
+  };
+  f.change('界'.repeat(350000));
+  await f.engine.sync();
+  assert.equal(f.engine.getStatus().kind, 'error');
+  assert.equal(f.engine.getStatus().messageCode, 'save-rejected');
+  const draft = JSON.parse(f.storage.getItem(f.options.storageKey));
+  assert.deepEqual(draft.pending, f.state.local);
+  assert.equal(draft.unconfirmed, null);
+  assert.deepEqual(f.state.remote.content, design('local'));
+  await f.engine.sync();
+  await f.engine.sync();
+  assert.equal(attempts, 1);
+  f.change('smaller design');
+  await f.engine.sync();
+  assert.equal(attempts, 2);
+  assert.equal(f.engine.getStatus().kind, 'synced');
+  assert.deepEqual(f.state.remote.content, design('smaller design'));
+});
+
+test('definite server rejections retain the draft and pause unchanged writes', async t => {
+  for (const error of [{ code: '42501' }, { code: 'PGRST301' }, { status: 400 }, { statusCode: 403 }]) {
+    let attempts = 0;
+    const f = fixture(t, { writeRemote: async () => { attempts++; throw error; } });
+    await f.engine.start();
+    await f.engine.sync();
+    assert.equal(f.engine.getStatus().kind, 'error');
+    assert.equal(f.engine.getStatus().messageCode, 'save-rejected');
+    assert.equal(attempts, 1);
+    const draft = JSON.parse(f.storage.getItem(f.options.storageKey));
+    assert.deepEqual(draft.pending, design('local'));
+    assert.equal(draft.baseRevision, null);
+    assert.equal(draft.unconfirmed, null);
+  }
+});
+
+test('transport and retryable server failures retain unknown-write recovery and retry', async t => {
+  for (const error of [new TypeError('Failed to fetch'), { status: 503 }, { status: 429 }, { code: '08006' }, { code: '40001' }, { code: 'PGRST003' }]) {
+    let attempts = 0;
+    const f = fixture(t, { writeRemote: async () => { attempts++; throw error; } });
+    await f.engine.start();
+    assert.equal(f.engine.getStatus().kind, 'offline');
+    assert.equal(f.engine.getStatus().messageCode, 'save-unconfirmed');
+    assert.deepEqual(JSON.parse(f.storage.getItem(f.options.storageKey)).unconfirmed.content, design('local'));
+    await f.engine.sync();
+    assert.equal(attempts, 2);
+  }
+});
+
+test('failed durable remote application cannot acknowledge a new base or overwrite cloud after reload', async t => {
+  const f = fixture(t);
+  await f.engine.start();
+  const before = JSON.parse(f.storage.getItem(f.options.storageKey));
+  f.state.remote = row('new cloud', 2);
+  f.options.applyRemote = () => { throw new Error('primary storage quota'); };
+  await f.engine.sync();
+  assert.equal(f.engine.getStatus().kind, 'error');
+  assert.equal(f.engine.getStatus().revision, 1);
+  assert.deepEqual(JSON.parse(f.storage.getItem(f.options.storageKey)), before);
+  f.engine.stop();
+  const next = fixture(t, { storage: f.storage });
+  next.state.local = clone(f.state.local);
+  next.state.remote = clone(f.state.remote);
+  await next.engine.start();
+  assert.deepEqual(next.state.local, design('new cloud'));
+  assert.deepEqual(next.state.remote.content, design('new cloud'));
+  assert.equal(next.state.writes.length, 0);
+});
+
+test('failed durable application during conflict resolution preserves the pending draft and base', async t => {
+  const f = fixture(t);
+  await f.engine.start();
+  f.change('pending edit');
+  f.state.remote = row('other device', 2);
+  await f.engine.sync();
+  assert.equal(f.engine.getStatus().kind, 'conflict');
+  const before = f.storage.getItem(f.options.storageKey);
+  f.options.applyRemote = () => { throw new Error('primary storage quota'); };
+  await f.engine.resolve('remote');
+  assert.equal(f.engine.getStatus().kind, 'error');
+  assert.equal(f.engine.getStatus().revision, 1);
+  assert.equal(f.storage.getItem(f.options.storageKey), before);
+  f.engine.stop();
+  const next = fixture(t, { storage: f.storage });
+  next.state.local = clone(f.state.local);
+  next.state.remote = clone(f.state.remote);
+  await next.engine.start();
+  assert.equal(next.engine.getStatus().kind, 'conflict');
+  assert.deepEqual(next.state.local, design('pending edit'));
+  assert.deepEqual(next.state.remote.content, design('other device'));
+  assert.equal(next.state.writes.length, 0);
+});
+
+test('engine status exposes stable message codes for UI translation', async t => {
+  const f = fixture(t);
+  f.state.remote = row('cloud');
+  await f.engine.start();
+  assert.equal(f.engine.getStatus().messageCode, 'conflict');
+  f.options.backup = () => false;
+  await f.engine.resolve('remote');
+  assert.equal(f.engine.getStatus().messageCode, 'backup-failed');
+  for (const status of f.state.statuses) {
+    assert.match(status.messageCode, /^[a-z]+(?:-[a-z]+)*$/);
+    assert.equal(status.message, undefined);
+  }
+});

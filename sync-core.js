@@ -13,6 +13,16 @@
       }, Object.create(null)) : value;
   const equal = (a, b) => JSON.stringify(ordered(a)) === JSON.stringify(ordered(b));
 
+  // PostgREST/SQL validation and authorization failures are definite rejections.
+  // Network exceptions and retryable server failures may have committed a write.
+  const isPermanentRejection = error => {
+    const status = Number(error?.status ?? error?.statusCode);
+    if (status >= 400) return status < 500 && status !== 408 && status !== 429;
+    const code = String(error?.code || '');
+    return /^(?:[0-9A-Z]{5}|PGRST[0-9]{3})$/.test(code)
+      && !/^(?:08|40|53|55|57|58|XX|PGRST00)/.test(code);
+  };
+
   class DesignSync {
     constructor(options) {
       this.options = options;
@@ -24,6 +34,7 @@
       this._baseContent = null;
       this._updatedAt = null;
       this._unconfirmed = null;
+      this._rejected = null;
       this._conflict = undefined;
       this._status = { kind: 'connecting' };
       this._timer = null;
@@ -39,9 +50,9 @@
 
     _live(epoch) { return this._active && epoch === this._epoch; }
 
-    _statusAs(kind, message) {
+    _statusAs(kind, messageCode) {
       this._status = { kind, revision: this._baseRevision, updatedAt: this._updatedAt };
-      if (message) this._status.message = message;
+      if (messageCode) this._status.messageCode = messageCode;
       if (kind === 'conflict') this._status.remote = copy(this._conflict);
       if (this.options.onStatus) this.options.onStatus(this.getStatus());
       return this.getStatus();
@@ -73,7 +84,7 @@
         }));
         return true;
       } catch (_) {
-        this._statusAs('error', '浏览器无法保存待同步草稿，请先导出方案并释放存储空间。');
+        this._statusAs('error', 'draft-storage-failed');
         return false;
       }
     }
@@ -121,11 +132,11 @@
           }
           if (this._pending !== null && !equal(local, this._pending)) {
             if (!equal(local, this._baseContent)) {
-              this._statusAs('error', '当前方案与待同步草稿不同。请先导出两份方案，再导入要继续的版本。');
+              this._statusAs('error', 'draft-mismatch');
               return false;
             }
             if (this.options.isEditing()) {
-              this._statusAs('pending', '结束当前编辑后恢复待同步草稿。');
+              this._statusAs('pending', 'restore-after-edit');
               return false;
             }
             this._apply(this._pending);
@@ -138,7 +149,7 @@
         this._loaded = true;
         return this._persist();
       } catch (_) {
-        this._statusAs('error', '本机待同步草稿无法读取，请先导出备份后再处理。');
+        this._statusAs('error', 'draft-unreadable');
         return false;
       }
     }
@@ -149,7 +160,7 @@
       this._epoch += 1;
       this._loaded = false;
       this._preloadEdited = false;
-      this._statusAs('connecting', '正在连接云端…');
+      this._statusAs('connecting', 'connecting');
       return this.sync();
     }
 
@@ -158,7 +169,7 @@
       if (!this._loaded) {
         this._preloadEdited = true;
         this._editVersion += 1;
-        this._statusAs('error', '待同步草稿尚未读取完成，请先导出当前方案备份。');
+        this._statusAs('error', 'draft-not-loaded');
         return;
       }
       try {
@@ -166,12 +177,12 @@
         this._pristine = false;
         this._editVersion += 1;
         if (!this._persist()) return;
-        if (this._conflict !== undefined) this._statusAs('conflict', '本机和云端都有修改，请选择保留的版本。');
-        else this._statusAs('pending', '修改已保存在本机，等待同步。');
+        if (this._conflict !== undefined) this._statusAs('conflict', 'conflict');
+        else this._statusAs('pending', 'pending');
         clearTimeout(this._timer);
         this._timer = setTimeout(() => { this._timer = null; this.sync(); }, 800);
       } catch (_) {
-        this._statusAs('error', '当前方案未通过校验，已暂停云端同步。');
+        this._statusAs('error', 'local-invalid');
       }
     }
 
@@ -190,16 +201,16 @@
         } while (this._again && this._live(epoch));
         return this.getStatus();
       }).catch(() => {
-        if (this._live(epoch)) this._statusAs('error', '同步遇到异常，本机方案已保留。');
+        if (this._live(epoch)) this._statusAs('error', 'sync-failed');
         return this.getStatus();
       }).finally(() => { if (this._running === work) this._running = null; });
       this._running = work;
       return work;
     }
 
-    _showConflict(remote, message) {
+    _showConflict(remote, messageCode) {
       this._conflict = copy(remote);
-      return this._statusAs('conflict', message || '本机和云端都有修改，请选择保留的版本。');
+      return this._statusAs('conflict', messageCode || 'conflict');
     }
 
     _acknowledge(row) {
@@ -207,17 +218,18 @@
       this._baseContent = copy(row.content);
       this._updatedAt = row.updated_at || null;
       this._unconfirmed = null;
+      this._rejected = null;
       if (equal(this._pending, row.content)) this._pending = null;
       this._conflict = undefined;
       this._pristine = false;
       if (!this._persist()) return;
       this._statusAs(this._pending === null ? 'synced' : 'pending',
-        this._pending === null ? '已与云端同步。' : '还有新的修改等待同步。');
+        this._pending === null ? 'synced' : 'more-pending');
     }
 
     _acceptRemote(row) {
       if (this.options.isEditing()) {
-        this._statusAs('pending', '正在编辑，结束后继续同步。');
+        this._statusAs('pending', 'editing');
         return false;
       }
       this._apply(row.content);
@@ -229,32 +241,32 @@
     async _syncOnce(epoch) {
       if (!this._persist()) return;
       if (this._conflict !== undefined) {
-        this._statusAs('conflict', '本机和云端都有修改，请选择保留的版本。');
+        this._statusAs('conflict', 'conflict');
         return;
       }
       if (this.options.isEditing()) {
-        this._statusAs('pending', '正在编辑，结束后继续同步。');
+        this._statusAs('pending', 'editing');
         return;
       }
       let remote;
       try { remote = await this.options.readRemote(); }
       catch (_) {
-        if (this._live(epoch)) this._statusAs('offline', '暂时无法连接云端，修改仍保存在本机。');
+        if (this._live(epoch)) this._statusAs('offline', 'offline');
         return;
       }
       if (!this._live(epoch)) return;
       try { remote = this._row(remote); }
       catch (_) {
-        this._statusAs('error', '云端方案未通过校验，已保留本机方案。');
+        this._statusAs('error', 'remote-invalid');
         return;
       }
       if (this.options.isEditing()) {
-        this._statusAs('pending', '正在编辑，结束后继续同步。');
+        this._statusAs('pending', 'editing');
         return;
       }
       const local = this._local();
       if (remote === null) {
-        if (this._baseRevision !== null) { this._showConflict(null, '云端方案已不存在，请确认是否重新上传本机方案。'); return; }
+        if (this._baseRevision !== null) { this._showConflict(null, 'remote-missing'); return; }
         this._pending = local;
         if (this._persist()) await this._write(local, 0, epoch);
         return;
@@ -285,21 +297,30 @@
       this._updatedAt = remote.updated_at || null;
       if (!this._persist()) return;
       if (this._pending !== null) await this._write(this._pending, remote.revision, epoch);
-      else this._statusAs('synced', '已与云端同步。');
+      else this._statusAs('synced', 'synced');
     }
 
     async _write(content, expectedRevision, epoch) {
       if (!this._live(epoch) || this.options.isEditing()) {
-        if (this._live(epoch)) this._statusAs(this._conflict === undefined ? 'pending' : 'conflict', '正在编辑，结束后继续同步。');
+        if (this._live(epoch)) this._statusAs(this._conflict === undefined ? 'pending' : 'conflict', 'editing');
         return;
       }
       const sent = copy(content);
+      if (this._rejected && equal(this._rejected, sent)) {
+        this._statusAs('error', 'save-rejected');
+        return;
+      }
       this._unconfirmed = { expectedRevision, content: sent };
       if (!this._persist()) return;
       let result;
       try { result = await this.options.writeRemote({ expectedRevision, content: sent }); }
-      catch (_) {
-        if (this._live(epoch)) this._statusAs('offline', '尚未确认云端保存结果，重连后会先核对版本。');
+      catch (error) {
+        if (!this._live(epoch)) return;
+        if (isPermanentRejection(error)) {
+          this._unconfirmed = null;
+          this._rejected = sent;
+          if (this._persist()) this._statusAs('error', 'save-rejected');
+        } else this._statusAs('offline', 'save-unconfirmed');
         return;
       }
       if (!this._live(epoch)) return;
@@ -310,13 +331,13 @@
         if (result.applied && (remote === null || remote.revision <= expectedRevision
           || !equal(remote.content, sent))) throw new Error('Invalid saved result');
       } catch (_) {
-        this._statusAs('error', '云端保存结果未通过校验，本机草稿已保留。');
+        this._statusAs('error', 'save-result-invalid');
         return;
       }
       if (!result.applied) {
         this._unconfirmed = null;
         if (remote && equal(remote.content, sent)) this._acknowledge(remote);
-        else if (this._persist()) this._showConflict(remote, '云端出现新修改，请重新确认要保留的版本。');
+        else if (this._persist()) this._showConflict(remote, 'conflict-updated');
         return;
       }
       this._acknowledge(remote);
@@ -334,9 +355,9 @@
         const remote = copy(this._conflict);
         const local = this._local();
         const editVersion = this._editVersion;
-        if (this.options.isEditing()) return this._statusAs('conflict', '请结束当前编辑后再选择版本。');
+        if (this.options.isEditing()) return this._statusAs('conflict', 'choose-after-edit');
         if (choice === 'remote' && remote === null) {
-          return this._statusAs('conflict', '云端没有可下载的方案，请保留本机方案。');
+          return this._statusAs('conflict', 'remote-unavailable');
         }
         const discarded = choice === 'local' ? remote && remote.content : local;
         if (discarded !== null) {
@@ -345,13 +366,13 @@
               throw new Error('Backup refused');
             }
           } catch (_) {
-            return this._statusAs('conflict', '备份未成功，尚未覆盖任何版本。请先导出备份。');
+            return this._statusAs('conflict', 'backup-failed');
           }
         }
         if (!this._live(epoch)) return this.getStatus();
         if (choice === 'remote') {
           if (editVersion !== this._editVersion || !equal(local, this._local()) || this.options.isEditing()) {
-            return this._statusAs('conflict', '本机又有新的编辑，请结束编辑后重新选择版本。');
+            return this._statusAs('conflict', 'edited-during-choice');
           }
           this._acceptRemote(remote);
         } else {
@@ -360,7 +381,7 @@
         }
         return this.getStatus();
       }).catch(() => {
-        if (this._live(epoch)) this._statusAs('error', '处理冲突时遇到异常，本机方案已保留。');
+        if (this._live(epoch)) this._statusAs('error', 'resolve-failed');
         return this.getStatus();
       }).finally(() => { if (this._resolving === work) this._resolving = null; });
       this._resolving = work;
