@@ -8,6 +8,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="theme-color" content="#fffdf9">
 <title>我的家 · 原图形态 · CAD尺寸</title>
+<link rel="stylesheet" href="sync-ui.css">
 <style>
 :root{
   --bg:#f3efe7; --paper:#f7f4ee; --panel:#fffdf9; --line:#e3dccf; --ink:#2b2824; --muted:#8a8174;
@@ -294,6 +295,7 @@ main.drawer-panel #fab{opacity:0;visibility:hidden}
       <button class="btn chip" data-lang="en" title="English">EN</button>
     </div>
     <span id="saveStatus" role="status" aria-live="polite"></span>
+    <button class="btn cloud-button" id="cloudSyncButton" type="button" aria-haspopup="dialog" data-en="Cloud sync">云端同步</button>
     <button class="btn" id="fullscreen" title="全屏 (Shift+F)" style="border:1px solid var(--line);background:#fff">⛶ 全屏</button>
     <details class="menu"><summary class="btn" data-en="File ▾">文件 ▾</summary>
       <div class="menu-pop">
@@ -359,6 +361,8 @@ main.drawer-panel #fab{opacity:0;visibility:hidden}
 <script src="cad-geometry.js"></script>
 <script src="photo-appearance.js"></script>
 <script src="home-plan.js"></script>
+<script src="sync-config.js"></script>
+<script src="sync-core.js"></script>
 <script>
 /* ======================= 多语言（中文 / English，默认中文） ======================= */
 const LANG_KEY = 'huxing-lang';
@@ -520,7 +524,7 @@ const svg = $('#plan');
 
 /* ======================= 状态 / 历史 / 存储 ======================= */
 let state = load() || defaultState();
-const ui = {tool:'select', sel:null, mA:null, mCur:null,
+const ui = {tool:'select', sel:null, mA:null, mCur:null, editing3d:false,
   layers:{dims:true, labels:true, furn:true, cad:false, grid:false, bearing:false, wallSnap:true}};
 let view = {x0:0, y0:0, s:.06};
 const undoStack = [], redoStack = [];
@@ -532,9 +536,13 @@ function updateSaveStatus(){
   el.textContent = persistence.status === 'error' ? tr('本机保存失败 · 请导出JSON','Local save failed · export JSON') : persistence.status === 'saved' ? tr('已保存到本机','Saved on this device') : tr('尚未保存','Not saved yet');
   el.title = tr('同一浏览器、同一网址自动保存；重要版本请另存方案JSON。旧照片版存档保留。','Saved in this browser at this URL. Export important versions as JSON. The old photo plan remains intact.');
 }
-function save(){
-  try { localStorage.setItem(STORE, JSON.stringify(state)); persistence.status = 'saved'; persistence.error = ''; updateSaveStatus(); return true; }
-  catch(e) { persistence.status = 'error'; persistence.error = e.message || ''; updateSaveStatus(); return false; }
+function save(notifyCloud = true){
+  let saved = false;
+  try { localStorage.setItem(STORE, JSON.stringify(state)); persistence.status = 'saved'; persistence.error = ''; saved = true; }
+  catch(e) { persistence.status = 'error'; persistence.error = e.message || ''; }
+  updateSaveStatus();
+  if (notifyCloud) window.dispatchEvent(new Event('designchange'));
+  return saved;
 }
 const snap = () => JSON.stringify(state);
 function commit(before){ undoStack.push(before); if (undoStack.length > 150) undoStack.shift(); redoStack.length = 0; save(); }
@@ -1308,6 +1316,7 @@ svg.addEventListener('contextmenu', e => { if (ui.tool==='measure'){ e.preventDe
 
 /* ======================= 键盘 ======================= */
 document.addEventListener('keydown', e => {
+  if (document.querySelector('dialog[open]')) return;
   if (e.target.matches('input,select,textarea')) return;
   if (window.View3D?.walking()) return;
   const mod = e.metaKey || e.ctrlKey, k = e.key.toLowerCase();
@@ -1522,14 +1531,33 @@ function setLang(l){
   buildLib(); renderOpenings(); renderDims(); renderAll();
   $('#tip').textContent = TIPS()[viewMode];
   window.View3D?.relang();
+  window.dispatchEvent(new Event('designlanguagechange'));
 }
 $('#langSel').onclick = e => { const l = e.target.closest('[data-lang]')?.dataset.lang; if (l && l !== LANG) setLang(l); };
 
 applyStaticLang(); syncFullscreen();
 buildDefs(); buildLib(); renderOpenings(); renderDims();
-if (persistence.status === 'ready') save();
+if (persistence.status === 'ready') save(false);
 $('#tip').textContent = TIPS()['2d'];
 fitView(); renderAll();
+window.FloorplanApp = {
+  planId: PLAN.id,
+  storageKey: STORE,
+  read: () => JSON.parse(snap()),
+  validate: fixState,
+  isPristine: () => JSON.stringify(fixState(state)) === JSON.stringify(fixState(defaultState())),
+  isEditing: () => !!(drag || libDrag || ui.editing3d || ui.mA || document.activeElement?.closest('#panel input,#panel select,#panel textarea')),
+  applyRemote(content){
+    state = fixState(content);
+    ui.sel = ui.mA = ui.mCur = null;
+    undoStack.length = redoStack.length = 0;
+    save(false);
+    renderAll();
+  },
+  text: tr,
+  toast,
+  exportPlan: () => $('#exportJson').click()
+};
 </script>
 <script type="module">
 /* ============================================================
@@ -1615,6 +1643,7 @@ function init(){
     const h = pick(e), f = h?.fid === ui.sel.id && getF(h.fid), g = f && groundAt(e.clientX, e.clientY);
     if (!g) return;
     fdrag = {id:f.id, pid:e.pointerId, sx:e.clientX, sy:e.clientY, ox:g.x - f.cx, oy:g.y - f.cy, before:snap(), moved:false};
+    ui.editing3d = true;
     orbit.enabled = false; fly = null; cv.setPointerCapture(e.pointerId);
   }, true);
   cv.addEventListener('pointermove', e => {
@@ -1628,6 +1657,7 @@ function init(){
   const endF = e => {
     if (!fdrag || e.pointerId !== fdrag.pid) return;
     const d = fdrag; fdrag = null; orbit.enabled = true; cv.style.cursor = '';
+    ui.editing3d = false;
     if (d.moved){ commit(d.before); renderAll(); }
   };
   cv.addEventListener('pointerup', endF); cv.addEventListener('pointercancel', endF);
@@ -2687,6 +2717,7 @@ function stepWalk(dt){
   if (!blocked(p.x, p.z + mv.z)) p.z += mv.z;
 }
 addEventListener('keydown', e => {
+  if (document.querySelector('dialog[open]')) return;
   if (!active || e.target.matches('input,select,textarea')) return;
   keys[e.code] = true;
   if (opt.mode === 'walk' && e.code === 'KeyE'){ const h = pick(); if (h?.door && h.dist < 2.5) h.door.open = !h.door.open; }
@@ -2748,5 +2779,6 @@ function relang(){ syncWalkTexts(); if (inited) buildLabels(); }
 
 window.View3D = {enter, exit, relang, sync:() => sync(), shot, groundAt, flyToRoom:id => active && !anim && flyToRoom(id), walking:() => active && opt.mode === 'walk'};
 </script>
+<script type="module" src="sync-ui.js"></script>
 </body>
 </html>

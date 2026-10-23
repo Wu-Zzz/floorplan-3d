@@ -1,0 +1,36 @@
+.cloud-button{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:#fff;font-size:12px}
+.cloud-button::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--muted)}
+.cloud-button[data-state="synced"]::before{background:var(--teal)}
+.cloud-button[data-state="pending"]::before,.cloud-button[data-state="connecting"]::before{background:var(--accent)}
+.cloud-button[data-state="conflict"],.cloud-button[data-state="error"]{color:#a13b29;border-color:#dcb0a2}
+.cloud-dialog{width:min(460px,calc(100vw - 28px));max-height:calc(100dvh - 40px);padding:0;border:1px solid var(--line);border-radius:14px;background:var(--panel);color:var(--ink);box-shadow:0 20px 80px #2b282438;overflow:auto}
+.cloud-dialog::backdrop{background:#2b282466;backdrop-filter:blur(2px)}
+.cloud-dialog [hidden]{display:none!important}
+.cloud-dialog-head{display:flex;align-items:center;justify-content:space-between;padding:20px 22px 12px}
+.cloud-dialog h2{font-size:19px;font-weight:600;margin:0;letter-spacing:.5px}
+.cloud-dialog-body{padding:0 22px 22px}
+.cloud-dialog p{line-height:1.75;margin:8px 0 16px}
+.cloud-dialog label{display:block;font-size:12px;color:var(--muted);margin:16px 0 5px}
+.cloud-dialog input{width:100%;border:1px solid var(--line);border-radius:7px;background:#fff;padding:10px 12px;font-size:16px}
+.cloud-dialog input:focus{outline:2px solid var(--accent-soft);border-color:var(--accent)}
+.cloud-dialog .btn{min-height:40px;border:1px solid var(--line);white-space:normal;text-align:center}
+.cloud-dialog .btn:disabled{opacity:.5;cursor:wait}
+.cloud-dialog .primary{border-color:var(--accent)}
+.cloud-dialog .cloud-wide{width:100%;margin-top:12px}
+.cloud-note{font-size:12px;color:var(--muted)}
+.cloud-account{display:block;font-size:13px;overflow-wrap:anywhere;margin:4px 0 16px}
+.cloud-state-card{padding:14px;background:var(--paper);border:1px solid var(--line);border-radius:8px;margin:12px 0}
+.cloud-state-card strong{display:block;font-size:14px;color:var(--teal)}
+.cloud-state-card small{display:block;margin-top:5px;color:var(--muted);font-variant-numeric:tabular-nums}
+.cloud-conflict{border-top:1px solid var(--line);padding-top:12px;margin-top:14px}
+.cloud-conflict h3{font-size:14px;margin:0 0 8px;color:#9b4a29}
+.cloud-conflict p{font-size:12px;margin-bottom:8px}
+.cloud-actions{display:flex;gap:8px;margin-top:12px}
+.cloud-actions>*{flex:1}
+.cloud-message{font-size:12px;white-space:pre-line;overflow-wrap:anywhere;color:var(--teal);min-height:1.5em}
+.cloud-message[data-error="true"]{color:#a13b29}
+.cloud-recovery{border-top:1px solid var(--line);padding-top:14px;margin-top:18px}
+.cloud-recovery summary{cursor:pointer;color:var(--muted);font-size:12px}
+.cloud-recovery-list{display:grid;gap:7px;margin-top:10px}
+.cloud-recovery-list button{text-align:left;font-size:12px}
+@media(max-width:600px){.cloud-dialog-head{padding:18px 18px 10px}.cloud-dialog-body{padding:0 18px 18px}.cloud-actions{flex-direction:column}}

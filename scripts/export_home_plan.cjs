@@ -15,7 +15,7 @@ const element = (key) => {
 };
 const saved = new Map();
 const ctx = vm.createContext({
-  window:{},document:{querySelector:element,querySelectorAll:()=>[],documentElement:element('html'),body:element('body'),addEventListener:noop},
+  window:{dispatchEvent:noop},Event:class {},document:{querySelector:element,querySelectorAll:()=>[],documentElement:element('html'),body:element('body'),addEventListener:noop},
   localStorage:{getItem:k=>saved.get(k)||null,setItem:(k,v)=>saved.set(k,v)},
   matchMedia:()=>({matches:false,addEventListener:noop}),addEventListener:noop,
   ResizeObserver:class {observe(){}},setTimeout:()=>0,clearTimeout:noop,
