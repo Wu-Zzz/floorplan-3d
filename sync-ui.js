@@ -47,7 +47,7 @@ async function claimTabId(){
     tabId = id;
     try { sessionStorage.setItem('floorplan-sync-tab', id); } catch {}
   };
-  if (!navigator.locks) { remember(crypto.randomUUID()); return; }
+  if (!navigator.locks) { remember(candidate); return; }
   await new Promise(resolve => {
     const claim = id => navigator.locks.request('floorplan-sync-tab-' + id, {ifAvailable:true}, lock => {
       if (!lock) { claim(crypto.randomUUID()); return; }
@@ -76,6 +76,36 @@ function statusText(){
   };
   return text(...(labels[status.kind] || labels.error));
 }
+const statusMessages = {
+  'draft-storage-failed':['浏览器无法保存待同步草稿，请先导出方案并释放存储空间。','The browser cannot save the pending draft. Export your design and free storage space.'],
+  'draft-mismatch':['当前方案与待同步草稿不同。请先导出两份方案，再导入要继续的版本。','The current design differs from the pending draft. Export both designs, then import the version you want to continue.'],
+  'restore-after-edit':['结束当前编辑后恢复待同步草稿。','Finish editing to restore the pending draft.'],
+  'draft-unreadable':['本机待同步草稿无法读取，请先导出备份后再处理。','The pending draft cannot be read. Export a backup, then back up and recheck versions.'],
+  connecting:['正在连接云端…','Connecting to cloud storage…'],
+  'draft-not-loaded':['待同步草稿尚未读取完成，请先导出当前方案备份。','The pending draft has not loaded. Export a backup of the current design first.'],
+  conflict:['本机和云端都有修改，请选择保留的版本。','Both this device and the cloud have changes. Choose the version to keep.'],
+  pending:['修改已保存在本机，等待同步。','Changes are saved on this device and waiting to sync.'],
+  'local-invalid':['当前方案未通过校验，已暂停云端同步。','The current design failed validation. Cloud sync is paused.'],
+  'sync-failed':['同步遇到异常，本机方案已保留。','Sync encountered a problem. Your local design is retained.'],
+  synced:['已与云端同步。','The design is synced with cloud storage.'],
+  'more-pending':['还有新的修改等待同步。','Newer changes are still waiting to sync.'],
+  editing:['正在编辑，结束后继续同步。','Finish editing to continue syncing.'],
+  offline:['暂时无法连接云端，修改仍保存在本机。','Cannot connect to cloud storage right now. Changes are retained on this device.'],
+  'remote-invalid':['云端方案未通过校验，已保留本机方案。','The cloud design failed validation. Your local design is retained.'],
+  'remote-missing':['云端方案已不存在，请确认是否重新上传本机方案。','The cloud design no longer exists. Confirm whether to upload the local design again.'],
+  'save-unconfirmed':['尚未确认云端保存结果，重连后会先核对版本。','The cloud save is unconfirmed. Versions will be checked before retrying after reconnection.'],
+  'save-result-invalid':['云端保存结果未通过校验，本机草稿已保留。','The cloud save response failed validation. Your local draft is retained.'],
+  'conflict-updated':['云端出现新修改，请重新确认要保留的版本。','The cloud design changed again. Choose the version to keep again.'],
+  'choose-after-edit':['请结束当前编辑后再选择版本。','Finish editing before choosing a version.'],
+  'remote-unavailable':['云端没有可下载的方案，请保留本机方案。','There is no cloud design to download. Keep the local design.'],
+  'backup-failed':['备份未成功，尚未覆盖任何版本。请先导出备份。','The backup failed, so no version was replaced. Export a backup first.'],
+  'edited-during-choice':['本机又有新的编辑，请结束编辑后重新选择版本。','New local edits were made. Finish editing, then choose a version again.'],
+  'resolve-failed':['处理冲突时遇到异常，本机方案已保留。','Could not resolve the conflict. Your local design is retained.'],
+  'save-rejected':['云端拒绝保存此方案。请先导出备份，缩减方案大小或检查账号权限后，保留备份并重新核对版本。','Cloud storage rejected this design. Export a backup, reduce the design size or check account access, then back up and recheck versions.']
+};
+function statusMessage(){
+  return status.messageCode ? text(...(statusMessages[status.messageCode] || statusMessages['sync-failed'])) : '';
+}
 function dateLabel(value){
   return value ? new Date(value).toLocaleString(document.documentElement.lang, {month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
 }
@@ -98,7 +128,11 @@ function render(){
   label('cloudAccountConnect','用此账号连接当前方案','Connect this account to this design');
   el('cloudState').textContent = statusText();
   el('cloudTime').textContent = status.updatedAt ? text('上次云端保存：','Last cloud save: ') + dateLabel(status.updatedAt) : text('本机方案始终保留，联网后自动重试。','Your local design is retained. Sync retries when connected.');
-  if (status.message && status.kind !== 'synced') el('cloudTime').textContent = status.message;
+  if (status.messageCode && status.kind !== 'synced') el('cloudTime').textContent = statusMessage();
+  if (status.kind === 'error' && status.messageCode) {
+    el('cloudMessage').textContent = statusMessage();
+    el('cloudMessage').dataset.error = 'true';
+  }
   el('cloudConflict').hidden = status.kind !== 'conflict';
   label('cloudConflictTitle','两边都有不同的方案','Different versions on both sides');
   label('cloudConflictHelp','请选择要继续使用的版本。替换前会保留备份，不会自动合并家具位置。','Choose the version to keep using. A backup is retained before replacement; furniture positions are not automatically merged.');
@@ -116,34 +150,50 @@ function render(){
   label('cloudRecoveryLabel','备份与待同步草稿','Backups and pending drafts');
   if (dialog.open) renderRecovery();
 }
-function downloadPlan(content, name){
-  const blob = new Blob([JSON.stringify(app.validate(content), null, 2)],{type:'application/json'});
+function downloadRaw(raw, name){
+  const blob = new Blob([raw],{type:'application/json'});
   const url = URL.createObjectURL(blob), a = document.createElement('a');
   a.href = url; a.download = name + '.json'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
-function backup(content, reason){
+function downloadPlan(content, name){
+  downloadRaw(JSON.stringify(app.validate(content), null, 2), name);
+}
+function keepBackup(record){
   const records = JSON.parse(localStorage.getItem(backupKey) || '[]');
-  records.push({content:app.validate(content),reason,at:new Date().toISOString()});
+  records.push({...record,at:new Date().toISOString()});
   localStorage.setItem(backupKey, JSON.stringify(records.slice(-5)));
   return true;
+}
+function backup(content, reason){
+  return keepBackup({content:app.validate(content),reason});
 }
 function renderRecovery(){
   const list = el('cloudRecoveryList'); list.replaceChildren();
   try {
-    const entries = JSON.parse(localStorage.getItem(backupKey) || '[]').map(r => ({content:r.content,label:text('替换前备份 · ','Before replacement · ') + dateLabel(r.at)}));
+    const entries = JSON.parse(localStorage.getItem(backupKey) || '[]').map(r => ({...r,label:text(r.rawDraft == null ? '替换前备份 · ' : '重置前草稿原始记录 · ',r.rawDraft == null ? 'Before replacement · ' : 'Raw draft before reset · ') + dateLabel(r.at)}));
     if (user) {
       const prefix = app.storageKey + '-cloud-' + user.id + '-';
       for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i);
         if (!key.startsWith(prefix)) continue;
-        const record = JSON.parse(localStorage.getItem(key));
+        const raw = localStorage.getItem(key);
+        let record;
+        try { record = JSON.parse(raw); if (record?.pending) app.validate(record.pending); }
+        catch {
+          entries.push({rawDraft:raw,label:text('无法读取的草稿原始记录 · ','Unreadable raw draft · ') + (key.endsWith(tabId) ? text('本窗口','this tab') : text('其他窗口','another tab'))});
+          continue;
+        }
         if (record?.pending) entries.push({content:record.pending,label:text('待同步草稿 · ','Pending draft · ') + (key.endsWith(tabId) ? text('本窗口','this tab') : text('其他窗口','another tab'))});
       }
     }
     for (const entry of entries.reverse()) {
-      const content = app.validate(entry.content), b = document.createElement('button');
+      const b = document.createElement('button');
       b.type = 'button'; b.className = 'btn'; b.textContent = entry.label;
-      b.onclick = () => downloadPlan(content, '方案备份-' + new Date().toISOString().slice(0,10));
+      if (entry.rawDraft != null) b.onclick = () => downloadRaw(entry.rawDraft, 'sync-draft-record-' + new Date().toISOString().slice(0,10));
+      else {
+        const content = app.validate(entry.content);
+        b.onclick = () => downloadPlan(content, '方案备份-' + new Date().toISOString().slice(0,10));
+      }
       list.append(b);
     }
     if (!entries.length) list.textContent = text('暂无备份。发生版本替换时会自动保留最近 5 份。','No backups yet. The last 5 replaced versions are retained automatically.');
@@ -186,8 +236,8 @@ async function setSession(session){
     writeRemote:({expectedRevision,content}) => request(client.rpc('save_floorplan',{p_owner_id:account.id,p_plan_id:app.planId,p_expected_revision:expectedRevision,p_content:content})),
     onStatus(nextStatus){
       if (current !== generation) return;
-      status = nextStatus; render();
-      if (nextStatus.kind === 'error') message(nextStatus.message || '同步遇到问题，本机方案仍保留。','Sync encountered a problem. Your local design is retained.',true);
+      status = nextStatus; message(); render();
+      if (nextStatus.kind === 'error' && !nextStatus.messageCode) message('同步遇到问题，本机方案仍保留。','Sync encountered a problem. Your local design is retained.',true);
       else if (nextStatus.kind === 'synced') message();
     }
   });
@@ -213,9 +263,11 @@ el('cloudRecheck').onclick = async () => {
   if (!user) return;
   try {
     const account = user, key = app.storageKey + '-cloud-' + account.id + '-' + tabId;
-    const draft = JSON.parse(localStorage.getItem(key) || 'null');
+    const raw = localStorage.getItem(key);
     backup(app.read(), 'before-recheck');
-    if (draft?.pending) backup(draft.pending, 'pending-before-recheck');
+    // Preserve the exact record, including unreadable JSON or invalid pending
+    // content, before removing the key that prevents initialization.
+    if (raw != null) keepBackup({rawDraft:raw,sourceKey:key,reason:'draft-before-recheck'});
     engine?.stop(); clearInterval(timer);
     localStorage.removeItem(key);
     user = null; await setSession({user:account});
