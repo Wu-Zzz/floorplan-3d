@@ -16,11 +16,12 @@
   // PostgREST/SQL validation and authorization failures are definite rejections.
   // Network exceptions and retryable server failures may have committed a write.
   const isPermanentRejection = error => {
+    const code = String(error?.code || '');
+    // Retryable database failures can also be transported as HTTP 4xx.
+    if (/^(?:08|40|53|55|57|58|XX|PGRST00)/.test(code)) return false;
     const status = Number(error?.status ?? error?.statusCode);
     if (status >= 400) return status < 500 && status !== 408 && status !== 429;
-    const code = String(error?.code || '');
-    return /^(?:[0-9A-Z]{5}|PGRST[0-9]{3})$/.test(code)
-      && !/^(?:08|40|53|55|57|58|XX|PGRST00)/.test(code);
+    return /^(?:[0-9A-Z]{5}|PGRST[0-9]{3})$/.test(code);
   };
 
   class DesignSync {

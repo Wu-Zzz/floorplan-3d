@@ -47,7 +47,65 @@ async function claimTabId(){
     tabId = id;
     try { sessionStorage.setItem('floorplan-sync-tab', id); } catch {}
   };
-  if (!navigator.locks) { remember(candidate); return; }
+  if (!navigator.locks) {
+    // IndexedDB read/write transactions serialize claims across tabs. Storage
+    // events/localStorage alone cannot arbitrate simultaneous page startup.
+    const db = await new Promise((resolve, reject) => {
+      const request = window.indexedDB.open(app.storageKey + '-sync-tabs', 1);
+      request.onupgradeneeded = () => request.result.createObjectStore('claims');
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+      request.onblocked = () => reject(new Error('Tab registry blocked'));
+    });
+    const claimant = crypto.randomUUID();
+    const releasedKey = id => app.storageKey + '-sync-tab-released-' + id;
+    let id;
+    const release = () => new Promise(resolve => {
+      // A page may unload before an IndexedDB deletion commits. This token
+      // allows its next load to reclaim the ID without trusting an old release.
+      try { localStorage.setItem(releasedKey(id), claimant); } catch {}
+      try {
+        const tx = db.transaction('claims', 'readwrite'), claims = tx.objectStore('claims');
+        const request = claims.get(id);
+        request.onsuccess = () => { if (request.result === claimant) claims.delete(id); };
+        tx.oncomplete = tx.onabort = tx.onerror = () => { db.close(); resolve(); };
+      } catch { db.close(); resolve(); }
+    });
+    try {
+      id = await new Promise((resolve, reject) => {
+        const tx = db.transaction('claims', 'readwrite'), claims = tx.objectStore('claims');
+        const request = claims.get(candidate);
+        let chosen;
+        request.onsuccess = () => {
+          try {
+            const available = request.result == null || localStorage.getItem(releasedKey(candidate)) === request.result;
+            chosen = available ? candidate : crypto.randomUUID();
+            claims.put(claimant, chosen);
+          } catch { tx.abort(); }
+        };
+        tx.oncomplete = () => resolve(chosen);
+        tx.onabort = tx.onerror = () => reject(tx.error || new Error('Tab claim failed'));
+      });
+      if (id !== candidate) {
+        const drafts = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (key?.startsWith(app.storageKey + '-cloud-') && key.endsWith('-' + candidate)) {
+            drafts.push([key.slice(0, -candidate.length) + id, localStorage.getItem(key)]);
+          }
+        }
+        // Never expire claims or delete the source: a suspended tab may own it.
+        // After a crash, a stale claim safely forks the exact saved draft.
+        for (const [key, raw] of drafts) if (raw != null) localStorage.setItem(key, raw);
+      }
+      remember(id);
+      releaseTabLock = release;
+    } catch (error) {
+      if (id) await release(); else db.close();
+      throw error;
+    }
+    return;
+  }
   await new Promise(resolve => {
     const claim = id => navigator.locks.request('floorplan-sync-tab-' + id, {ifAvailable:true}, lock => {
       if (!lock) { claim(crypto.randomUUID()); return; }
@@ -202,8 +260,9 @@ function renderRecovery(){
 async function request(query){
   const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 15000);
   try {
-    const {data,error} = await query.abortSignal(controller.signal);
-    if (error) throw error;
+    const {data,error,status:responseStatus} = await query.abortSignal(controller.signal);
+    // Supabase returns the HTTP status beside error, not inside it.
+    if (error) throw {...error,status:responseStatus ?? error.status};
     return data;
   } finally { clearTimeout(timeout); }
 }
@@ -326,8 +385,9 @@ window.addEventListener('pageshow', async event => {
   } catch { connectionError(); }
 });
 render();
-await claimTabId();
-if (configured) {
+let tabReady = false;
+try { await claimTabId(); tabReady = true; } catch { connectionError(); }
+if (configured && tabReady) {
   try {
     const {createClient} = await import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/+esm');
     client = createClient(config.url, config.publishableKey, {auth:{storageKey:'floorplan-auth-' + new URL(config.url).hostname,detectSessionInUrl:true,persistSession:true,autoRefreshToken:true}});

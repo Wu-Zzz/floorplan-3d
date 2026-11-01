@@ -27,7 +27,41 @@ function memory(initial = []) {
     key: index => [...data.keys()][index],
     get length() { return data.size; },
     entries: () => [...data],
+    claims: new Map(),
   };
+}
+
+
+// Browser registry double; the actual cross-tab transaction ordering is also
+// checked in Chromium with simultaneous page loads and Web Locks disabled.
+function tabRegistry(data) {
+  return {open() {
+    const request = {};
+    queueMicrotask(() => {
+      request.result = {
+        close() {},
+        transaction() {
+          const tx = {};
+          tx.objectStore = () => ({
+            get(key) {
+              const result = {};
+              queueMicrotask(() => {
+                result.result = data.get(key);
+                result.onsuccess?.();
+                queueMicrotask(() => tx.oncomplete?.());
+              });
+              return result;
+            },
+            put(value,key) { data.set(key,value); },
+            delete(key) { data.delete(key); },
+          });
+          return tx;
+        },
+      };
+      request.onsuccess?.();
+    });
+    return request;
+  }};
 }
 
 function deferred() {
@@ -88,6 +122,7 @@ async function fixture(t, settings = {}) {
   };
   const window = {
     FloorplanApp: app, DesignSync,
+    indexedDB: Object.hasOwn(settings, 'indexedDB') ? settings.indexedDB : tabRegistry(storage.claims),
     FLOORPLAN_CLOUD: { url: 'https://test.supabase.co', publishableKey: 'sb_publishable_test' },
     addEventListener: (name, callback) => handlers.set(name, callback),
   };
@@ -124,6 +159,7 @@ async function fixture(t, settings = {}) {
           const owner = f.session?.user.id;
           const call = { owner, args: clone(args), applied: false };
           f.writes.push(call);
+          if (f.writeResponse) return clone(f.writeResponse);
           // Model the database RPC's explicit request-owner guard. Its SQL
           // implementation is separately exercised in cloud-database.test.cjs.
           if (!owner || args.p_owner_id !== owner) {
@@ -330,4 +366,113 @@ test('all sync-engine explanations render in English and update when language ch
   f.ui.showStatus({kind:'conflict',messageCode:'backup-failed'});
   assert.equal(f.element('cloudTime').textContent, '備份未成功，尚未覆蓋任何版本。請先導出備份。');
   assert.equal(f.element('cloudMessage').textContent, '', 'A resolved error must not leave stale recovery instructions in another language.');
+});
+
+
+test('HTTP-only permanent rejections reach the engine through the Supabase adapter', async t => {
+  for (const status of [400, 403, 413]) {
+    const f = await fixture(t, {language:'en'});
+    f.writeResponse = {data:null, error:{message:'Request rejected'}, status};
+    f.change('Rejected edit');
+    await f.ui.getEngine().sync();
+    await f.ui.getEngine().sync();
+    assert.equal(f.ui.getStatus().messageCode, 'save-rejected');
+    assert.equal(f.writes.length, 1);
+    assert.deepEqual(f.rows.A.content, design('A base'));
+    const draft = f.storage.entries().find(([key]) => key.startsWith('home-design-cloud-A-'));
+    assert.deepEqual(JSON.parse(draft[1]).pending, design('Rejected edit'));
+    assert.equal(JSON.parse(draft[1]).unconfirmed, null);
+  }
+});
+
+test('retryable HTTP responses retain unknown-write recovery through the Supabase adapter', async t => {
+  for (const [status, code] of [[0, ''], [408, ''], [429, ''], [503, ''], [400, '40001'], [400, '40P01'], [504, 'PGRST003']]) {
+    const f = await fixture(t);
+    f.writeResponse = {data:null, error:{message:'Request interrupted',code}, status};
+    f.change('Unconfirmed edit');
+    await f.ui.getEngine().sync();
+    assert.equal(f.ui.getStatus().messageCode, 'save-unconfirmed');
+    const draft = f.storage.entries().find(([key]) => key.startsWith('home-design-cloud-A-'));
+    assert.deepEqual(JSON.parse(draft[1]).unconfirmed.content, design('Unconfirmed edit'));
+    await f.ui.getEngine().sync();
+    assert.equal(f.writes.length, 2);
+  }
+});
+
+
+test('duplicated tabs without Web Locks retain separate recoverable drafts', async t => {
+  const storage = memory();
+  const first = await fixture(t, {storage,navigator:{}});
+  first.change('First offline edit');
+  const second = await fixture(t, {
+    storage,navigator:{},sessionStorage:memory(first.sessionStorage.entries()),
+  });
+  const firstId = first.sessionStorage.getItem('floorplan-sync-tab');
+  const secondId = second.sessionStorage.getItem('floorplan-sync-tab');
+  assert.notEqual(firstId, secondId);
+  first.change('First independent draft');
+  second.change('Second independent draft');
+  assert.deepEqual(JSON.parse(storage.getItem('home-design-cloud-A-' + firstId)).pending, design('First independent draft'));
+  assert.deepEqual(JSON.parse(storage.getItem('home-design-cloud-A-' + secondId)).pending, design('Second independent draft'));
+  first.emit('pagehide'); second.emit('pagehide');
+  const reloaded = await fixture(t, {storage,navigator:{},sessionStorage:first.sessionStorage});
+  assert.equal(reloaded.ui.getStatus().messageCode, 'draft-mismatch');
+  assert.equal(reloaded.writes.length, 0);
+  assert.deepEqual(JSON.parse(storage.getItem('home-design-cloud-A-' + firstId)).pending, design('First independent draft'));
+});
+
+
+test('a stale fallback claim forks the exact saved draft after an unclean exit', async t => {
+  const id = 'crashed-tab', key = 'home-design-cloud-A-' + id;
+  const raw = JSON.stringify({version:1,pending:design('Offline crash edit'),baseRevision:1,baseContent:design('A base'),unconfirmed:null});
+  const storage = memory([[key,raw]]);
+  storage.claims.set(id, 'old-page');
+  const f = await fixture(t, {storage,navigator:{},sessionStorage:memory([['floorplan-sync-tab',id]])});
+  const nextId = f.sessionStorage.getItem('floorplan-sync-tab');
+  assert.notEqual(nextId, id);
+  assert.equal(storage.getItem(key), raw, 'The source draft must remain available for recovery.');
+  assert.equal(f.ui.getStatus().kind, 'synced');
+  assert.equal(f.writes[0].args.p_expected_revision, 1);
+  assert.deepEqual(f.rows.A.content, design('Offline crash edit'));
+  f.emit('pagehide');
+  await new Promise(setImmediate);
+  assert.equal(storage.claims.has(nextId), false);
+});
+
+test('fallback draft copy failure leaves the source intact and prevents cloud access', async t => {
+  const id = 'occupied-tab', key = 'home-design-cloud-A-' + id, raw = '{unreadable draft';
+  const storage = memory([[key,raw]]);
+  storage.claims.set(id, 'other-page');
+  const save = storage.setItem;
+  storage.setItem = (name,value) => {
+    if (name.startsWith('home-design-cloud-A-') && name !== key) throw new Error('Storage full');
+    save(name,value);
+  };
+  const f = await fixture(t, {storage,navigator:{},sessionStorage:memory([['floorplan-sync-tab',id]]),language:'en'});
+  assert.equal(f.ui.getStatus().kind, 'error');
+  assert.equal(f.ui.getEngine(), undefined);
+  assert.equal(f.writes.length, 0);
+  assert.equal(storage.getItem(key), raw);
+  assert.equal(f.sessionStorage.getItem('floorplan-sync-tab'), id);
+  assert.deepEqual([...storage.claims], [[id, 'other-page']]);
+});
+
+test('fallback pages refuse to connect when the tab registry is unavailable', async t => {
+  const f = await fixture(t, {navigator:{},indexedDB:null});
+  assert.equal(f.ui.getStatus().kind, 'error');
+  assert.equal(f.ui.getEngine(), undefined);
+  assert.equal(f.writes.length, 0);
+});
+
+
+test('an unload release token permits reload but cannot release a later claimant', async t => {
+  const id = 'released-tab', storage = memory();
+  storage.claims.set(id, 'departed-page');
+  storage.setItem('home-design-sync-tab-released-' + id, 'departed-page');
+  const sessionStorage = memory([['floorplan-sync-tab',id]]);
+  const first = await fixture(t, {storage,sessionStorage,navigator:{}});
+  assert.equal(first.sessionStorage.getItem('floorplan-sync-tab'), id);
+  const second = await fixture(t, {storage,navigator:{},sessionStorage:memory([['floorplan-sync-tab',id]])});
+  assert.notEqual(second.sessionStorage.getItem('floorplan-sync-tab'), id);
+  assert.equal(storage.claims.size, 2);
 });
